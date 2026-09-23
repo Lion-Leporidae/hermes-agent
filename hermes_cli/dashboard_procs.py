@@ -569,6 +569,89 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
                   for pid in survivors)
 
 
+# Set on the child spawned by ``_reap_in_fresh_interpreter`` so it never delegates again.
+_FRESH_REAP_CHILD_ENV = "HERMES_DASHBOARD_REAP_CHILD"
+# Sibling sources the reap binds to at call time (``_dash.*``, ``_hermes_home_for_pid``).
+_REAP_SOURCE_FILES = ("dashboard_procs.py", "main_dashboard.py", "profiles.py")
+
+
+def _interpreter_predates_reap_sources() -> bool:
+    """True when this interpreter started before the reap's sources were last written.
+
+    That is an updater from before the post-swap hand-off (94ced1a2b2, ``update_handoff.py``):
+    it pulls, reloads this module from the new tree, and calls it against the ``main_dashboard``
+    and ``profiles`` it imported before the pull — new caller, old callees (#118154). A current
+    updater never gets here (its tail runs in a child born on the pulled code), and neither does
+    a plain ``--stop``, whose interpreter starts after the files it imports.
+    """
+    if os.environ.get(_FRESH_REAP_CHILD_ENV) == "1":
+        return False
+    try:
+        import psutil
+
+        started = psutil.Process().create_time()
+        here = Path(__file__).resolve().parent
+        newest = max(os.stat(here / name).st_mtime for name in _REAP_SOURCE_FILES)
+    except Exception:
+        return False
+    return newest > started
+
+
+def _reap_in_fresh_interpreter(
+    reason: str, *, restart_managed: bool, already_restarted_units: "set[str] | None",
+    scope_home: str | None,
+) -> dict[str, list]:
+    """Run ``_kill_stale_dashboard_processes`` in a child interpreter on the pulled tree.
+
+    Reloading the stale siblings in place only moves the crash to the next stale module (see
+    ``update_handoff.py``); a fresh interpreter binds every helper to the same commit. The
+    child inherits stdout, so its progress lines print as if this process wrote them.
+    """
+    import json
+    import tempfile
+
+    request = {"reason": reason, "restart_managed": restart_managed,
+               "already_restarted_units": sorted(already_restarted_units or ()),
+               "scope_home": scope_home}
+    fd, result_path = tempfile.mkstemp(prefix="hermes-dashboard-reap-", suffix=".json")
+    os.close(fd)
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); "
+            "from hermes_cli.dashboard_procs import _fresh_interpreter_reap_main; "
+            "_fresh_interpreter_reap_main(sys.argv[2], sys.argv[3])")
+    project_root = str(Path(__file__).resolve().parents[1])
+    cmd = [sys.executable, "-c", code, project_root, json.dumps(request), result_path]
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        subprocess.run(cmd, env={**os.environ, _FRESH_REAP_CHILD_ENV: "1"},
+                       stdin=subprocess.DEVNULL, check=False)
+        result = json.loads(Path(result_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"  ⚠ Could not stop stale dashboard/serve process(es) after the update: {exc}")
+        print("    Finish with: hermes dashboard --stop   (then relaunch it)")
+        return _empty_result()
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(result_path)
+    return result
+
+
+def _fresh_interpreter_reap_main(request_json: str, result_path: str) -> None:
+    """Child half of ``_reap_in_fresh_interpreter``: run the reap, write its result as JSON."""
+    import json
+
+    request = json.loads(request_json)
+    if not request.get("scope_home"):
+        # Only a pre-#113978 updater omits the home, and an unscoped sweep would stop other
+        # installs' backends; scope to the home this run belongs to, as current updaters do.
+        from hermes_constants import get_hermes_home
+
+        request["scope_home"] = str(get_hermes_home())
+    request["already_restarted_units"] = set(request.get("already_restarted_units") or ()) or None
+    result = _kill_stale_dashboard_processes(**request)
+    Path(result_path).write_text(json.dumps(result), encoding="utf-8")
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
@@ -592,6 +675,10 @@ def _kill_stale_dashboard_processes(
     function runs. Without excluding them, a Serve-only install's freshly restarted process is found again
     here and restarted a second time for no benefit (review on #83595).
     """
+    if _interpreter_predates_reap_sources():
+        return _reap_in_fresh_interpreter(
+            reason, restart_managed=restart_managed,
+            already_restarted_units=already_restarted_units, scope_home=scope_home)
     from hermes_cli import main_dashboard as _dash
 
     if restart_managed and _dash._restart_managed_dashboard_service(reason):
