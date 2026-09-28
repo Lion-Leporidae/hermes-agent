@@ -253,4 +253,3 @@ def test_moa_setup_picker_honors_rules(monkeypatch):
     config["model_catalog"]["model_filters"]["moa"] = {"allow": []}
     flows._model_flow_moa(config)
     assert len(menus) == 1
-
