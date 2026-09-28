@@ -1332,9 +1332,12 @@ def list_picker_providers(
     background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded."""
     from hermes_cli.model_switch import list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
+    from hermes_cli.model_catalog import filter_picker_rows, get_picker_model_filters
+    model_filters = get_picker_model_filters()
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
-        user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
+        user_providers=user_providers, custom_providers=custom_providers,
+        max_models=None if model_filters else max_models,
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
         non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider)
@@ -1349,7 +1352,7 @@ def list_picker_providers(
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)
-            p["models"] = live_ids[:max_models] if max_models is not None else live_ids
+            p["models"] = live_ids[:max_models] if max_models is not None and not model_filters else live_ids
             p["total_models"] = len(live_ids)
 
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
@@ -1358,4 +1361,4 @@ def list_picker_providers(
     from hermes_cli.models_validate import drop_unofferable_model_ids
 
     drop_unofferable_model_ids(filtered)
-    return filtered
+    return filter_picker_rows(filtered, model_filters, max_models)
