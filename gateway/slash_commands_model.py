@@ -476,7 +476,9 @@ class GatewayModelCommandsMixin:
         def _text_picker_rows():
             from hermes_cli.model_catalog import filter_picker_rows, get_picker_model_filters
             filters = get_picker_model_filters()
-            rows = list_authenticated_providers(max_models=None if filters else 5, **listing_kwargs)
+            rows = list_authenticated_providers(
+                max_models=5, **listing_kwargs,
+                **({"uncapped_providers": set(filters)} if filters else {}))
             return filter_picker_rows(rows, filters, max_models=5)
 
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)

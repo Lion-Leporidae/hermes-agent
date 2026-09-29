@@ -101,7 +101,7 @@ def filter_picker_rows(rows: list[dict], filters: dict, max_models: int | None =
     Never mutate the discovery cache or the caller's provider rows.
     """
     from hermes_cli.model_switch_providers import _cap_models
-    from hermes_cli.providers import normalize_provider
+    from hermes_cli.providers import custom_provider_slug, normalize_provider
 
     if not filters:
         return rows
@@ -109,15 +109,26 @@ def filter_picker_rows(rows: list[dict], filters: dict, max_models: int | None =
     for row in rows:
         slug = row.get("slug") or ""
         models = row.get("models") or []
-        rule = filters.get(normalize_provider(slug))
-        if rule is not None:
-            models = filter_picker_model_ids(slug, models, filters)
-            if not models:
-                continue
+        provider = normalize_provider(slug)
+        if provider not in filters and row.get("source") == "user-config":
+            # Desktop reports the stable custom:<config-key> identity even when
+            # the discovery row still carries the bare providers: key.
+            provider = custom_provider_slug(str(row.get("name") or ""), slug)
+        rule = filters.get(provider)
+        if rule is None:
+            result.append(row)
+            continue
+        models = filter_picker_model_ids(provider, models, filters)
+        if not models:
+            continue
         row = dict(row)
-        if rule is not None:
-            row["total_models"] = len(models)
-        row["models"] = _cap_models(models, max_models, slug)
+        row["total_models"] = len(models)
+        # Match the original row builder's cap policy. Named custom endpoints,
+        # managed local models and virtual presets have always stayed uncapped.
+        source = row.get("source")
+        if source in {"built-in", "hermes", "canonical", "model-config"}:
+            models = _cap_models(models, max_models, "" if source == "canonical" else slug)
+        row["models"] = models
         result.append(row)
     return result
 

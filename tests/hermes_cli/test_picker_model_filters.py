@@ -169,6 +169,55 @@ def test_unset_preserves_models(catalogs):
             assert next(row["models"] for row in rows if row["slug"] == slug) == ids
 
 
+@pytest.mark.parametrize("surface", ["inventory", "gateway"])
+def test_other_provider_filter_preserves_custom_catalog(catalogs, surface):
+    from hermes_cli.config import load_config
+
+    home, _ = catalogs
+    local_models = ["local-a", "local-b", "local-c"]
+    results = []
+    for filters in ({}, {"anthropic": {"allow": ["claude-opus-5-5"]}}):
+        write_config(home, filters)
+        cfg = load_config()
+        cfg["providers"] = {
+            "local": {"base_url": "http://127.0.0.1:1234/v1", "models": local_models,
+                      "discover_models": False},
+        }
+        atomic_config_write(home / "config.yaml", cfg)
+        ctx = load_picker_context()
+        if surface == "inventory":
+            rows = build_models_payload(ctx, max_models=1)["providers"]
+        else:
+            rows = listing.list_picker_providers(user_providers=ctx.user_providers, max_models=1)
+        results.append(next(row["models"] for row in rows if row["slug"] == "local"))
+    assert results[0] == local_models
+    assert results[1] == results[0]
+
+
+@pytest.mark.parametrize("surface", ["inventory", "gateway"])
+@pytest.mark.parametrize("filter_key", ["local", "custom:local"])
+def test_custom_provider_filter_uses_stable_identity(catalogs, surface, filter_key):
+    from hermes_cli.config import load_config
+
+    home, _ = catalogs
+    write_config(home, {filter_key: {"deny": ["local-b"]}})
+    cfg = load_config()
+    cfg["providers"] = {
+        "local": {"name": "Renamed Local Server", "base_url": "http://127.0.0.1:1234/v1",
+                  "models": ["local-a", "local-b", "local-c"], "discover_models": False},
+    }
+    atomic_config_write(home / "config.yaml", cfg)
+    ctx = load_picker_context()
+    if surface == "inventory":
+        rows = build_models_payload(ctx, max_models=1)["providers"]
+    else:
+        rows = listing.list_picker_providers(user_providers=ctx.user_providers, max_models=1)
+    row = next(row for row in rows if row["slug"] == "local")
+    # Named custom endpoints retain their uncapped display policy.
+    assert row["models"] == ["local-a", "local-c"]
+    assert row["total_models"] == 2
+
+
 @pytest.mark.parametrize("source", ["live", "fallback"])
 def test_discovery_and_offline_fallback_are_filtered(catalogs, monkeypatch, source):
     home, discovered = catalogs

@@ -95,11 +95,12 @@ def build_models_payload(
         current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
         current_model=ctx.current_model, user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers, force_fresh_nous_tier=force_fresh_nous_tier,
-        max_models=None if ctx.model_filters else max_models,
+        max_models=max_models,
         refresh=refresh, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider, for_picker=for_picker,
         excluded_providers=ctx.excluded_providers or [],
         non_blocking_catalogs=non_blocking_catalogs,
+        **({"uncapped_providers": set(ctx.model_filters)} if ctx.model_filters else {}),
     )
 
     # Managed local runtime: staged GGUFs are selectable like any provider's models, but
